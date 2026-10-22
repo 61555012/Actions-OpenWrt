@@ -77,4 +77,22 @@ else
   echo "    [警告] 未找到 patches-6.12 目录, 跳过"
 fi
 
+echo "==== [diy-part2] 默认管理 IP 改为 192.168.6.1 ===="
+CONFIG_GEN="package/base-files/files/bin/config_generate"
+if [ -f "$CONFIG_GEN" ]; then
+  sed -i 's/192\.168\.1\.1/192.168.6.1/g' "$CONFIG_GEN"
+  grep -q '192.168.6.1' "$CONFIG_GEN" && echo "    默认 IP 已改为 192.168.6.1" || echo "    [警告] 替换失败"
+else
+  echo "    [警告] 未找到 $CONFIG_GEN, 跳过"
+fi
+
+echo "==== [diy-part2] 拉取 jerrykuku 最新版 argon 主题与配置插件 ===="
+# 删除 feeds 中自带的旧版, 避免冲突
+rm -rf feeds/luci/themes/argon feeds/luci/applications/luci-app-argon-config
+rm -rf package/feeds/luci/argon package/feeds/luci/luci-app-argon-config
+git clone --depth=1 https://github.com/jerrykuku/luci-theme-argon package/luci-theme-argon
+git clone --depth=1 https://github.com/jerrykuku/luci-app-argon-config package/luci-app-argon-config
+[ -f package/luci-theme-argon/Makefile ] && echo "    luci-theme-argon (jerrykuku 最新) OK"
+[ -f package/luci-app-argon-config/Makefile ] && echo "    luci-app-argon-config (jerrykuku 最新) OK"
+
 echo "==== [diy-part2] 完成 ===="
