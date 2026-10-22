@@ -32,12 +32,49 @@ LED_DTS="target/linux/mediatek/dts-ext/mt7986a-clx-s20p.dts"
 if [ -f "$LED_DTS" ]; then
   sed -i 's/realtek,led-act-select = <0x001b>/realtek,led-act-select = <0x321b>/g' "$LED_DTS"
   if grep -q 'realtek,led-act-select = <0x321b>' "$LED_DTS"; then
-    echo "    LED 已修复: modeA + 400ms/12.5%/60ms + 10M LPI"
+    echo "    DTS LED 配置已应用: modeA + 400ms/12.5%/60ms + 10M LPI"
   else
     echo "    [警告] 未匹配到 0x001b, 请确认是否已修复或路径变化"
   fi
 else
   echo "    [警告] 未找到 $LED_DTS, 跳过 LED 修复"
+fi
+
+echo "==== [diy-part2] 修复 realtek 驱动丢失的 LED 配置调用(根因) ===="
+# 内核 6.12 的 733 补丁只定义了 rtl8221b_config_led() 却从未调用它(死代码),
+# 导致 realtek,led-act-select 等属性完全不生效、2.5G 灯不亮。
+# 6.6 的 790 补丁是在 rtl822xb_config_init 末尾调用, 此处把调用补回去。
+LED_PATCH="target/linux/mediatek/patches-6.12/734-net-phy-realtek-call-rtl8221b_config_led.patch"
+if [ -d target/linux/mediatek/patches-6.12 ]; then
+cat > "$LED_PATCH" <<'EOF'
+From: S20P build fix
+Subject: net: phy: realtek: call rtl8221b_config_led from rtl822xb_config_init
+
+The 6.12 backport (patch 733) defines rtl8221b_config_led() but never
+calls it, so the realtek,led-*-select DT properties have no effect and
+the 2.5G port LEDs stay dark (e.g. CLX S20P). Restore the call that
+exists in the 6.6 patch (790).
+---
+--- a/drivers/net/phy/realtek/realtek_main.c
++++ b/drivers/net/phy/realtek/realtek_main.c
+@@ -1520,6 +1520,12 @@
+ static int rtl822xb_config_init(struct phy_device *phydev)
+ {
+-	return rtl822x_set_serdes_option_mode(phydev, false);
++	int ret;
++
++	ret = rtl822x_set_serdes_option_mode(phydev, false);
++	if (ret < 0)
++		return ret;
++
++	return rtl8221b_config_led(phydev);
+ }
+ 
+ static int rtl822xb_read_status(struct phy_device *phydev)
+EOF
+  echo "    已生成补丁: $LED_PATCH"
+else
+  echo "    [警告] 未找到 patches-6.12 目录, 跳过"
 fi
 
 echo "==== [diy-part2] 完成 ===="
