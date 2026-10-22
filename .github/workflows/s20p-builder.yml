@@ -1,0 +1,284 @@
+#
+# 基于 P3TERX/Actions-OpenWrt 模板改造
+# 目标源码: chasey-dev/immortalwrt-mt798x-rebase (25.12)
+# 机型:     CLX S20P (mediatek/filogic, clx_s20p)
+# 特性:
+#   - mosdns (sbwml 26.x golang feed + luci-app-mosdns v5 + v2ray-geodata)
+#   - OpenAppFilter (删除源码自带, 重拉 destan19 最新版)
+#   - 修复 2.5G 口 LED (dts-ext/mt7986a-clx-s20p.dts: 0x001b -> 0x321b)
+#   - 工具链缓存复用: actions/cache + Release(toolchain-cache) 双级缓存
+#   - 固件上传到本仓库 Releases
+#   - 根目录 files/ 自动拷入源码根目录
+#
+
+name: S20P-ChaseyDev-25.12
+
+on:
+  repository_dispatch:
+  workflow_dispatch:
+    inputs:
+      ssh:
+        description: 'SSH 连接调试'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: write
+  actions: write
+
+env:
+  REPO_URL: https://github.com/chasey-dev/immortalwrt-mt798x-rebase
+  REPO_BRANCH: 25.12
+  CONFIG_FILE: .config
+  DIY_P1_SH: diy-part1.sh
+  DIY_P2_SH: diy-part2.sh
+  UPLOAD_RELEASE: true
+  DEVICE_NAME: s20p-chaseydev
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 350
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Initialization environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+        sudo docker image prune --all --force
+        sudo -E apt-get -qq update
+        sudo -E apt-get -qq install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential bzip2 ccache cmake cpio curl device-tree-compiler fastjar flex gawk gettext gcc-multilib g++-multilib git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev libreadline-dev libssl-dev libtool lrzsz mkisofs msmtp ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd
+        sudo -E apt-get -qq autoremove --purge
+        sudo -E apt-get -qq clean
+        sudo timedatectl set-timezone "$TZ"
+        sudo mkdir -p /workdir
+        sudo chown $USER:$GROUPS /workdir
+
+    - name: Clone source code
+      working-directory: /workdir
+      run: |
+        df -hT $PWD
+        git clone "$REPO_URL" -b "$REPO_BRANCH" --single-branch --depth=1 openwrt
+        ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
+
+    - name: Load custom feeds / DIY part 1
+      run: |
+        chmod +x $DIY_P1_SH
+        cd openwrt
+        $GITHUB_WORKSPACE/$DIY_P1_SH
+
+    - name: Update feeds
+      run: cd openwrt && ./scripts/feeds update -a
+
+    # 自定义插件必须在此处(update 之后 / install 之前)执行
+    - name: Custom packages / DIY part 2
+      run: |
+        chmod +x $DIY_P2_SH
+        cd openwrt
+        $GITHUB_WORKSPACE/$DIY_P2_SH
+
+    - name: Install feeds
+      run: cd openwrt && ./scripts/feeds install -a
+
+    - name: Load custom configuration
+      run: |
+        [ -e files ] && cp -rf files openwrt/files
+        [ -e $CONFIG_FILE ] && cp $CONFIG_FILE openwrt/.config
+        cd openwrt
+        make defconfig
+        # 关闭 Ruby YJIT, 避免潜在 Rust 长编译
+        sed -i '/CONFIG_RUBY_ENABLE_YJIT/d' .config
+        echo "# CONFIG_RUBY_ENABLE_YJIT is not set" >> .config
+        make defconfig
+
+    - name: Generate toolchain cache key
+      id: cache-key
+      run: |
+        cd openwrt
+        TARGET=$(grep '^CONFIG_TARGET_BOARD=' .config | cut -d'"' -f2)
+        SUBTARGET=$(grep '^CONFIG_TARGET_SUBTARGET=' .config | cut -d'"' -f2)
+        TOOLS_HASH=$(find tools toolchain -type f \( -name "Makefile" -o -name "*.mk" \) \
+          -exec md5sum {} + 2>/dev/null | sort | md5sum | cut -d' ' -f1)
+        echo "CACHE_KEY=toolchain-${TARGET}-${SUBTARGET}-${TOOLS_HASH:0:16}" >> $GITHUB_OUTPUT
+        echo "CACHE_PREFIX=toolchain-${TARGET}-${SUBTARGET}" >> $GITHUB_OUTPUT
+        echo "缓存键: toolchain-${TARGET}-${SUBTARGET}-${TOOLS_HASH:0:16}"
+
+    - name: Restore toolchain (actions/cache)
+      uses: actions/cache/restore@v4
+      id: cache-restore
+      with:
+        path: |
+          /workdir/openwrt/staging_dir/host*
+          /workdir/openwrt/staging_dir/tool*
+        key: ${{ steps.cache-key.outputs.CACHE_KEY }}
+
+    - name: Restore toolchain (Release backup)
+      if: steps.cache-restore.outputs.cache-hit != 'true'
+      id: release-restore
+      continue-on-error: true
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        cd openwrt
+        KEY="${{ steps.cache-key.outputs.CACHE_KEY }}"
+        ASSET="${KEY}.tzst"
+        if ! gh release view toolchain-cache --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          echo "restored=false" >> $GITHUB_OUTPUT
+          echo "toolchain-cache 不存在, 首次运行"
+          exit 0
+        fi
+        if gh release view toolchain-cache --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' 2>/dev/null | grep -qx "$ASSET"; then
+          gh release download toolchain-cache --repo "$GITHUB_REPOSITORY" -p "$ASSET" -D .
+          if [ -e "$ASSET" ]; then
+            tar -I unzstd -xf "$ASSET" || tar -xf "$ASSET"
+            rm -f "$ASSET"
+            echo "restored=true" >> $GITHUB_OUTPUT
+            echo "Release 工具链恢复成功"
+          else
+            echo "restored=false" >> $GITHUB_OUTPUT
+          fi
+        else
+          echo "restored=false" >> $GITHUB_OUTPUT
+          echo "Release 中无该缓存: $ASSET"
+        fi
+
+    - name: Handle toolchain
+      id: toolchain
+      run: |
+        cd openwrt
+        if [ "${{ steps.cache-restore.outputs.cache-hit }}" = "true" ]; then
+          echo "actions/cache 命中, 跳过工具链编译"
+          echo "save_cache=false" >> $GITHUB_OUTPUT
+          echo "save_release=false" >> $GITHUB_OUTPUT
+        elif [ "${{ steps.release-restore.outputs.restored }}" = "true" ]; then
+          echo "Release 缓存命中, 回写 actions/cache"
+          echo "save_cache=true" >> $GITHUB_OUTPUT
+          echo "save_release=false" >> $GITHUB_OUTPUT
+        else
+          echo "无缓存, 开始编译工具链..."
+          make tools/install -j$(nproc) || make tools/install -j1 V=s
+          make toolchain/install -j$(nproc) || make toolchain/install -j1 V=s
+          echo "save_cache=true" >> $GITHUB_OUTPUT
+          echo "save_release=true" >> $GITHUB_OUTPUT
+        fi
+        sed -i 's/ $(tool.*\/stamp-compile)//' Makefile
+        echo "Makefile 已修改: 后续跳过工具链重编译"
+
+    - name: Save toolchain (actions/cache)
+      uses: actions/cache/save@v4
+      if: steps.toolchain.outputs.save_cache == 'true'
+      with:
+        path: |
+          /workdir/openwrt/staging_dir/host*
+          /workdir/openwrt/staging_dir/tool*
+        key: ${{ steps.cache-key.outputs.CACHE_KEY }}
+
+    - name: Save toolchain (Release backup)
+      if: steps.toolchain.outputs.save_release == 'true'
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        cd openwrt
+        KEY="${{ steps.cache-key.outputs.CACHE_KEY }}"
+        PREFIX="${{ steps.cache-key.outputs.CACHE_PREFIX }}"
+        tar -I zstdmt -cf "${KEY}.tzst" staging_dir/host* staging_dir/tool*
+        ls -lh "${KEY}.tzst"
+        if ! gh release view toolchain-cache --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          gh release create toolchain-cache --repo "$GITHUB_REPOSITORY" --title "Toolchain Cache" --notes "自动生成的工具链缓存, 请勿删除" --latest=false
+        fi
+        gh release view toolchain-cache --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' 2>/dev/null | grep "^${PREFIX}" | while read -r old; do
+          echo "删除旧缓存: $old"
+          gh release delete-asset toolchain-cache "$old" --repo "$GITHUB_REPOSITORY" -y 2>/dev/null || true
+        done
+        gh release upload toolchain-cache "${KEY}.tzst" --repo "$GITHUB_REPOSITORY" --clobber
+        rm -f "${KEY}.tzst"
+
+    - name: SSH connection to Actions
+      uses: mxschmitt/action-tmate@v3
+      if: github.event.inputs.ssh == 'true'
+
+    - name: Download package
+      run: |
+        cd openwrt
+        make download -j8 || make download -j1 V=s
+        find dl -size -1024c -exec ls -l {} \;
+        find dl -size -1024c -exec rm -f {} \;
+
+    - name: Compile the firmware
+      id: compile
+      run: |
+        cd openwrt
+        echo "$(nproc) thread compile"
+        make -j$(nproc) || make -j1 || make -j1 V=s
+        echo "status=success" >> $GITHUB_OUTPUT
+        grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
+        [ -s DEVICE_NAME ] && echo "DEVICE_SUFFIX=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
+        echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
+
+    - name: Check space usage
+      if: (!cancelled())
+      run: df -hT
+
+    - name: Organize files
+      id: organize
+      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+      run: |
+        cd openwrt/bin/targets/*/*
+        rm -rf packages
+        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+        echo "status=success" >> $GITHUB_OUTPUT
+
+    - name: Generate release tag
+      id: tag
+      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+      run: |
+        echo "release_tag=${DEVICE_NAME}${DEVICE_SUFFIX}-$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_OUTPUT
+        echo "status=success" >> $GITHUB_OUTPUT
+        {
+          echo "## S20P 固件 (chasey-dev 25.12)"
+          echo ""
+          echo "| 项目 | 详情 |"
+          echo "|------|------|"
+          echo "| 源码 | $REPO_URL |"
+          echo "| 分支 | $REPO_BRANCH |"
+          echo "| 设备 | clx_s20p / filogic |"
+          echo "| 插件 | mosdns + OpenAppFilter |"
+          echo "| LED  | 2.5G 口已修复 |"
+          echo "| 时间 | $(date '+%Y-%m-%d %H:%M:%S') (Shanghai) |"
+        } > release.txt
+
+    - name: Upload firmware to release
+      uses: softprops/action-gh-release@v2
+      if: steps.tag.outputs.status == 'success' && !cancelled()
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ steps.tag.outputs.release_tag }}
+        body_path: release.txt
+        files: |
+          ${{ env.FIRMWARE }}/*.bin
+          ${{ env.FIRMWARE }}/*.img.gz
+          ${{ env.FIRMWARE }}/*.manifest
+          ${{ env.FIRMWARE }}/*.tar.gz
+
+    - name: Delete workflow runs
+      uses: Mattraks/delete-workflow-runs@v2
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        retain_days: 1
+        keep_minimum_runs: 5
+
+    - name: Remove old releases
+      uses: dev-drprasad/delete-older-releases@v0.3.4
+      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
+      with:
+        keep_latest: 5
+        delete_tags: true
+        delete_tag_pattern: '^s20p-chaseydev-'
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
