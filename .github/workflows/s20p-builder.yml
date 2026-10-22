@@ -96,6 +96,23 @@ jobs:
         echo "# CONFIG_RUBY_ENABLE_YJIT is not set" >> .config
         make defconfig
 
+    # 强制校验: 目标必须是 mediatek/filogic + clx_s20p, 否则立即失败
+    # (历史上曾因缺 TARGET_BOARD/TARGET_SUBTARGET 而回落成 openwrt_one)
+    - name: Verify target device
+      run: |
+        cd openwrt
+        echo "===== .config 目标相关行 ====="
+        grep -E '^CONFIG_TARGET_(BOARD|SUBTARGET|ARCH_PACKAGES|mediatek_filogic_DEVICE)' .config || true
+        DEV=$(grep -E '^CONFIG_TARGET_mediatek_filogic_DEVICE_[a-z0-9_]+=y$' .config | sed -r 's/^CONFIG_TARGET_mediatek_filogic_DEVICE_(.*)=y/\1/' | head -1)
+        BOARD=$(grep '^CONFIG_TARGET_BOARD=' .config | cut -d'"' -f2)
+        SUB=$(grep '^CONFIG_TARGET_SUBTARGET=' .config | cut -d'"' -f2)
+        echo "board=$BOARD subtarget=$SUB device=$DEV"
+        if [ "$BOARD" != "mediatek" ] || [ "$SUB" != "filogic" ] || [ "$DEV" != "clx_s20p" ]; then
+          echo "❌ 目标机型不符: 期望 mediatek/filogic/clx_s20p, 实际 $BOARD/$SUB/$DEV"
+          exit 1
+        fi
+        echo "✅ 目标机型校验通过: mediatek/filogic/clx_s20p"
+
     - name: Generate toolchain cache key
       id: cache-key
       run: |
