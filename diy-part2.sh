@@ -28,17 +28,24 @@ git clone https://github.com/sbwml/luci-app-mosdns -b v5 package/mosdns
 git clone https://github.com/sbwml/v2ray-geodata package/v2ray-geodata
 
 echo "==== [diy-part2] 修复 S20P 两个 2.5G 口指示灯 (0x001b -> 0x321b) ===="
-LED_DTS="target/linux/mediatek/dts-ext/mt7986a-clx-s20p.dts"
-if [ -f "$LED_DTS" ]; then
-  sed -i 's/realtek,led-act-select = <0x001b>/realtek,led-act-select = <0x321b>/g' "$LED_DTS"
-  if grep -q 'realtek,led-act-select = <0x321b>' "$LED_DTS"; then
-    echo "    DTS LED 配置已应用: modeA + 400ms/12.5%/60ms + 10M LPI"
+# chasey-dev 25.12 用 dts-ext/mt7986a-clx-s20p.dts; padavanonly 24.10 用 dts/mt7986a-supergateway-s20p.dts
+LED_FIXED=0
+for LED_DTS in \
+  target/linux/mediatek/dts-ext/mt7986a-clx-s20p.dts \
+  target/linux/mediatek/dts/mt7986a-supergateway-s20p.dts \
+  target/linux/mediatek/dts/mt7986a-clx-s20p.dts ; do
+  [ -f "$LED_DTS" ] || continue
+  if grep -q 'realtek,led-act-select = <0x001b>' "$LED_DTS"; then
+    sed -i 's/realtek,led-act-select = <0x001b>/realtek,led-act-select = <0x321b>/g' "$LED_DTS"
+    echo "    $LED_DTS: 已改为 0x321b"
+  elif grep -q 'realtek,led-act-select = <0x321b>' "$LED_DTS"; then
+    echo "    $LED_DTS: 已是 0x321b, 无需修改"
   else
-    echo "    [警告] 未匹配到 0x001b, 请确认是否已修复或路径变化"
+    echo "    $LED_DTS: 未找到 led-act-select, 跳过"
   fi
-else
-  echo "    [警告] 未找到 $LED_DTS, 跳过 LED 修复"
-fi
+  LED_FIXED=1
+done
+[ "$LED_FIXED" = "1" ] || echo "    [警告] 未找到 S20P 的 DTS 文件"
 
 echo "==== [diy-part2] 修复 realtek 驱动丢失的 LED 配置调用(根因) ===="
 # 内核 6.12 的 733 补丁只定义了 rtl8221b_config_led() 却从未调用它(死代码),
