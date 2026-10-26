@@ -8,6 +8,30 @@
 
 A template for building OpenWrt with GitHub Actions
 
+## S20P 固件编译 (本项目)
+
+针对 **Super Gateway S20P** (mediatek / filogic, MT7986A) 的两套云编译，配置与 DIY 脚本按版本分文件夹存放，便于识别与维护：
+
+| 版本 | 工作流 | 源码 | 分支 | 设备 | 关键特性 |
+|------|--------|------|------|------|----------|
+| **25.12** | `s20p-25.12-chasey.yml` | chasey-dev/immortalwrt-mt798x-rebase | `25.12` | `clx_s20p` | 闭源 MTK WiFi + HNAT/WARP、mosdns、OpenAppFilter |
+| **24.10** | `s20p-24.10-yuzhii.yml` | Yuzhii0718/immortalwrt-mt798x-6.6-padavanonly | `openwrt-24.10-6.6` | `supergateway_s20p` | 同 25.12 插件 + **wrtbwmon**，闭源 WiFi + MTK 硬件加速强校验 |
+
+目录约定：
+
+```
+configs/25.12/s20p-chasey-25.12.config   # 25.12 配置 (clx_s20p)
+configs/24.10/s20p-yuzhii-24.10.config   # 24.10 配置 (supergateway_s20p, 含 wrtbwmon)
+diy/25.12/diy-part{1,2}.sh               # 25.12 DIY
+diy/24.10/diy-part{1,2}.sh               # 24.10 DIY
+files/                                   # 公共文件, 构建时合并进固件 /files
+```
+
+说明：
+- 两套均将根目录 `files/` 合并进固件。
+- **argon / argon-config 均使用源码自带老版本**，已去除 jerrykuku 最新版的拉取动作。
+- 24.10 的插件集与 25.12 相同，额外增加 `wrtbwmon`；并在编译前强校验闭源 WiFi (`kmod-mt_wifi`) 与 MTK 硬件加速 (`kmod-mediatek_hnat` / `kmod-warp`) 已启用。
+
 ## Usage
 
 - Click the [Use this template](https://github.com/P3TERX/Actions-OpenWrt/generate) button to create a new repository.

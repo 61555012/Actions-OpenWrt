@@ -1,17 +1,19 @@
 #
 # 基于 P3TERX/Actions-OpenWrt 模板改造
-# 目标源码: chasey-dev/immortalwrt-mt798x-rebase (25.12)
-# 机型:     CLX S20P (mediatek/filogic, clx_s20p)
+# 目标源码: Yuzhii0718/immortalwrt-mt798x-6.6-padavanonly (openwrt-24.10-6.6, 内核 6.6)
+# 机型:     Super Gateway S20P (mediatek/filogic, supergateway_s20p)
+# 配置:     configs/24.10/s20p-yuzhii-24.10.config
+# DIY:      diy/24.10/diy-part{1,2}.sh
 # 特性:
-#   - mosdns (sbwml 26.x golang feed + luci-app-mosdns v5 + v2ray-geodata)
-#   - OpenAppFilter (删除源码自带, 重拉 destan19 最新版)
-#   - 修复 2.5G 口 LED (dts-ext/mt7986a-clx-s20p.dts: 0x001b -> 0x321b)
-#   - 工具链缓存复用: actions/cache + Release(toolchain-cache) 双级缓存
+#   - 闭源 MTK WiFi (kmod-mt_wifi) + MTK 硬件加速 (HNAT / flow / WARP) 强校验
+#   - mosdns (sbwml v5) + v2ray-geodata + OpenAppFilter(destan19)
+#   - 额外 wrtbwmon (相对 25.12)
+#   - argon / argon-config: 使用源码自带老版本 (已去除最新版拉取)
+#   - 根目录 files/ 自动合并进固件
 #   - 固件上传到本仓库 Releases
-#   - 根目录 files/ 自动拷入源码根目录
 #
 
-name: S20P-ChaseyDev-25.12
+name: S20P-24.10-Yuzhii
 
 on:
   repository_dispatch:
@@ -22,21 +24,21 @@ on:
         required: false
         default: 'false'
   schedule:
-    # 每天北京时间早上 6 点(UTC 22:00)
-    - cron: '0 22 * * *'
+    # 每天北京时间 06:10 (UTC 22:10), 与 25.12 错开
+    - cron: '10 22 * * *'
 
 permissions:
   contents: write
   actions: write
 
 env:
-  REPO_URL: https://github.com/chasey-dev/immortalwrt-mt798x-rebase
-  REPO_BRANCH: 25.12
-  CONFIG_FILE: .config
-  DIY_P1_SH: diy-part1.sh
-  DIY_P2_SH: diy-part2.sh
+  REPO_URL: https://github.com/Yuzhii0718/immortalwrt-mt798x-6.6-padavanonly
+  REPO_BRANCH: openwrt-24.10-6.6
+  CONFIG_FILE: configs/24.10/s20p-yuzhii-24.10.config
+  DIY_P1_SH: diy/24.10/diy-part1.sh
+  DIY_P2_SH: diy/24.10/diy-part2.sh
   UPLOAD_RELEASE: true
-  DEVICE_NAME: s20p-chaseydev
+  DEVICE_NAME: s20p-yuzhii-24.10
   TZ: Asia/Shanghai
 
 jobs:
@@ -90,7 +92,9 @@ jobs:
 
     - name: Load custom configuration
       run: |
-        [ -e files ] && cp -rf files openwrt/files
+        # 引用 files 文件夹进固件 (合并式拷贝, 不覆盖源码已有目录)
+        mkdir -p openwrt/files
+        if [ -d files ]; then cp -a files/. openwrt/files/ && echo "files/ 已合并进 openwrt/files"; fi
         [ -e $CONFIG_FILE ] && cp $CONFIG_FILE openwrt/.config
         cd openwrt
         make defconfig
@@ -99,8 +103,7 @@ jobs:
         echo "# CONFIG_RUBY_ENABLE_YJIT is not set" >> .config
         make defconfig
 
-    # 强制校验: 目标必须是 mediatek/filogic + clx_s20p, 否则立即失败
-    # (历史上曾因缺 TARGET_BOARD/TARGET_SUBTARGET 而回落成 openwrt_one)
+    # 强制校验目标: mediatek/filogic + supergateway_s20p
     - name: Verify target device
       run: |
         cd openwrt
@@ -110,11 +113,34 @@ jobs:
         BOARD=$(grep '^CONFIG_TARGET_BOARD=' .config | cut -d'"' -f2)
         SUB=$(grep '^CONFIG_TARGET_SUBTARGET=' .config | cut -d'"' -f2)
         echo "board=$BOARD subtarget=$SUB device=$DEV"
-        if [ "$BOARD" != "mediatek" ] || [ "$SUB" != "filogic" ] || [ "$DEV" != "clx_s20p" ]; then
-          echo "❌ 目标机型不符: 期望 mediatek/filogic/clx_s20p, 实际 $BOARD/$SUB/$DEV"
+        if [ "$BOARD" != "mediatek" ] || [ "$SUB" != "filogic" ] || [ "$DEV" != "supergateway_s20p" ]; then
+          echo "❌ 目标机型不符: 期望 mediatek/filogic/supergateway_s20p, 实际 $BOARD/$SUB/$DEV"
           exit 1
         fi
-        echo "✅ 目标机型校验通过: mediatek/filogic/clx_s20p"
+        echo "✅ 目标机型校验通过: mediatek/filogic/supergateway_s20p"
+
+    # 强校验: 闭源 WiFi 与 MTK 硬件加速必须真实启用, 否则立即失败(避免白编译)
+    - name: Verify closed WiFi + MTK HW acceleration
+      run: |
+        cd openwrt
+        ok=1
+        check() {
+          if grep -q "^$1=y" .config; then echo "✅ $1 已启用";
+          else echo "❌ $1 未启用 -> 请在 $CONFIG_FILE 中确认包名/依赖"; ok=0; fi
+        }
+        echo "---- 闭源 MTK WiFi ----"
+        check CONFIG_PACKAGE_kmod-mt_wifi
+        check CONFIG_PACKAGE_kmod-conninfra
+        echo "---- MTK 硬件加速 (HNAT / WARP) ----"
+        check CONFIG_PACKAGE_kmod-mediatek_hnat
+        check CONFIG_PACKAGE_kmod-warp
+        echo "---- wrtbwmon (额外, 非致命) ----"
+        grep -q '^CONFIG_PACKAGE_luci-app-wrtbwmon=y' .config && echo "✅ luci-app-wrtbwmon" || echo "⚠️ luci-app-wrtbwmon 未选中(检查 feeds 是否提供)"
+        if [ "$ok" != "1" ]; then
+          echo "❌ 闭源 WiFi / MTK 硬件加速未全部启用, 终止编译"
+          exit 1
+        fi
+        echo "✅ 闭源 WiFi + MTK 硬件加速校验通过"
 
     - name: Generate toolchain cache key
       id: cache-key
@@ -124,9 +150,8 @@ jobs:
         SUBTARGET=$(grep '^CONFIG_TARGET_SUBTARGET=' .config | cut -d'"' -f2)
         TOOLS_HASH=$(find tools toolchain -type f \( -name "Makefile" -o -name "*.mk" \) \
           -exec md5sum {} + 2>/dev/null | sort | md5sum | cut -d' ' -f1)
-        echo "CACHE_KEY=toolchain-${TARGET}-${SUBTARGET}-${TOOLS_HASH:0:16}" >> $GITHUB_OUTPUT
-        echo "CACHE_PREFIX=toolchain-${TARGET}-${SUBTARGET}" >> $GITHUB_OUTPUT
-        echo "缓存键: toolchain-${TARGET}-${SUBTARGET}-${TOOLS_HASH:0:16}"
+        echo "CACHE_KEY=toolchain-24.10-${TARGET}-${SUBTARGET}-${TOOLS_HASH:0:16}" >> $GITHUB_OUTPUT
+        echo "缓存键: toolchain-24.10-${TARGET}-${SUBTARGET}-${TOOLS_HASH:0:16}"
 
     - name: Restore toolchain (actions/cache)
       uses: actions/cache/restore@v4
@@ -137,36 +162,6 @@ jobs:
           /workdir/openwrt/staging_dir/tool*
         key: ${{ steps.cache-key.outputs.CACHE_KEY }}
 
-    - name: Restore toolchain (Release backup)
-      if: steps.cache-restore.outputs.cache-hit != 'true'
-      id: release-restore
-      continue-on-error: true
-      env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        cd openwrt
-        KEY="${{ steps.cache-key.outputs.CACHE_KEY }}"
-        ASSET="${KEY}.tzst"
-        if ! gh release view toolchain-cache --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-          echo "restored=false" >> $GITHUB_OUTPUT
-          echo "toolchain-cache 不存在, 首次运行"
-          exit 0
-        fi
-        if gh release view toolchain-cache --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' 2>/dev/null | grep -qx "$ASSET"; then
-          gh release download toolchain-cache --repo "$GITHUB_REPOSITORY" -p "$ASSET" -D .
-          if [ -e "$ASSET" ]; then
-            tar -I unzstd -xf "$ASSET" || tar -xf "$ASSET"
-            rm -f "$ASSET"
-            echo "restored=true" >> $GITHUB_OUTPUT
-            echo "Release 工具链恢复成功"
-          else
-            echo "restored=false" >> $GITHUB_OUTPUT
-          fi
-        else
-          echo "restored=false" >> $GITHUB_OUTPUT
-          echo "Release 中无该缓存: $ASSET"
-        fi
-
     - name: Handle toolchain
       id: toolchain
       run: |
@@ -174,17 +169,11 @@ jobs:
         if [ "${{ steps.cache-restore.outputs.cache-hit }}" = "true" ]; then
           echo "actions/cache 命中, 跳过工具链编译"
           echo "save_cache=false" >> $GITHUB_OUTPUT
-          echo "save_release=false" >> $GITHUB_OUTPUT
-        elif [ "${{ steps.release-restore.outputs.restored }}" = "true" ]; then
-          echo "Release 缓存命中, 回写 actions/cache"
-          echo "save_cache=true" >> $GITHUB_OUTPUT
-          echo "save_release=false" >> $GITHUB_OUTPUT
         else
           echo "无缓存, 开始编译工具链..."
           make tools/install -j$(nproc) || make tools/install -j1 V=s
           make toolchain/install -j$(nproc) || make toolchain/install -j1 V=s
           echo "save_cache=true" >> $GITHUB_OUTPUT
-          echo "save_release=true" >> $GITHUB_OUTPUT
         fi
         sed -i 's/ $(tool.*\/stamp-compile)//' Makefile
         echo "Makefile 已修改: 后续跳过工具链重编译"
@@ -197,26 +186,6 @@ jobs:
           /workdir/openwrt/staging_dir/host*
           /workdir/openwrt/staging_dir/tool*
         key: ${{ steps.cache-key.outputs.CACHE_KEY }}
-
-    - name: Save toolchain (Release backup)
-      if: steps.toolchain.outputs.save_release == 'true'
-      env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        cd openwrt
-        KEY="${{ steps.cache-key.outputs.CACHE_KEY }}"
-        PREFIX="${{ steps.cache-key.outputs.CACHE_PREFIX }}"
-        tar -I zstdmt -cf "${KEY}.tzst" staging_dir/host* staging_dir/tool*
-        ls -lh "${KEY}.tzst"
-        if ! gh release view toolchain-cache --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-          gh release create toolchain-cache --repo "$GITHUB_REPOSITORY" --title "Toolchain Cache" --notes "自动生成的工具链缓存, 请勿删除" --latest=false
-        fi
-        gh release view toolchain-cache --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' 2>/dev/null | grep "^${PREFIX}" | while read -r old; do
-          echo "删除旧缓存: $old"
-          gh release delete-asset toolchain-cache "$old" --repo "$GITHUB_REPOSITORY" -y 2>/dev/null || true
-        done
-        gh release upload toolchain-cache "${KEY}.tzst" --repo "$GITHUB_REPOSITORY" --clobber
-        rm -f "${KEY}.tzst"
 
     - name: SSH connection to Actions
       uses: mxschmitt/action-tmate@v3
@@ -260,15 +229,16 @@ jobs:
         echo "release_tag=${DEVICE_NAME}${DEVICE_SUFFIX}-$(date +"%Y.%m.%d-%H%M")" >> $GITHUB_OUTPUT
         echo "status=success" >> $GITHUB_OUTPUT
         {
-          echo "## S20P 固件 (chasey-dev 25.12)"
+          echo "## S20P 固件 (Yuzhii0718 24.10 / 6.6)"
           echo ""
           echo "| 项目 | 详情 |"
           echo "|------|------|"
           echo "| 源码 | $REPO_URL |"
           echo "| 分支 | $REPO_BRANCH |"
-          echo "| 设备 | clx_s20p / filogic |"
-          echo "| 插件 | mosdns + OpenAppFilter |"
-          echo "| LED  | 2.5G 口已修复 |"
+          echo "| 设备 | supergateway_s20p / filogic |"
+          echo "| 无线 | 闭源 MTK WiFi (kmod-mt_wifi) |"
+          echo "| 加速 | MTK HNAT / flow / WARP |"
+          echo "| 插件 | mosdns + OpenAppFilter + wrtbwmon |"
           echo "| 时间 | $(date '+%Y-%m-%d %H:%M:%S') (Shanghai) |"
         } > release.txt
 
@@ -299,6 +269,6 @@ jobs:
       with:
         keep_latest: 5
         delete_tags: true
-        delete_tag_pattern: '^s20p-chaseydev-'
+        delete_tag_pattern: '^s20p-yuzhii-'
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
