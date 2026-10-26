@@ -28,23 +28,23 @@ echo "==== [diy-part2/24.10] 克隆 luci-app-mosdns(v5) 与 v2ray-geodata ===="
 git clone https://github.com/sbwml/luci-app-mosdns -b v5 package/mosdns
 git clone https://github.com/sbwml/v2ray-geodata package/v2ray-geodata
 
-echo "==== [diy-part2/24.10] wrtbwmon 可用性检查 (feeds 通常已自带) ===="
-if [ -d feeds/luci/applications/luci-app-wrtbwmon ] || [ -d package/feeds/luci/luci-app-wrtbwmon ]; then
-  echo "    luci-app-wrtbwmon: feeds 已提供"
-else
-  echo "    [提示] feeds 未发现 luci-app-wrtbwmon, 尝试从 openwrt 上游稀疏拉取"
-  if git clone --depth=1 --filter=blob:none --sparse \
-        https://github.com/openwrt/luci -b openwrt-24.10 /tmp/luci-wrtbwmon >/dev/null 2>&1; then
-    ( cd /tmp/luci-wrtbwmon && git sparse-checkout set applications/luci-app-wrtbwmon >/dev/null 2>&1 )
-    if [ -d /tmp/luci-wrtbwmon/applications/luci-app-wrtbwmon ]; then
-      cp -rf /tmp/luci-wrtbwmon/applications/luci-app-wrtbwmon package/luci-app-wrtbwmon
-      echo "    已从上游补入 luci-app-wrtbwmon"
-    fi
-    rm -rf /tmp/luci-wrtbwmon
+echo "==== [diy-part2/24.10] 关键包可用性检查 (源码自带, 无需外部 feed) ===="
+# 源码已自带: package/mtk/applications/{wrtbwmon,luci-app-wrtbwmon,mtwifi-cfg,
+#             luci-app-mtwifi-cfg,luci-app-turboacc-mtk,mii_mgr,regs,switch,datconf}
+for d in package/mtk/applications/wrtbwmon \
+         package/mtk/applications/luci-app-wrtbwmon \
+         package/mtk/applications/mtwifi-cfg \
+         package/mtk/applications/luci-app-mtwifi-cfg \
+         package/mtk/applications/luci-app-turboacc-mtk \
+         package/mtk/drivers/mt_wifi \
+         package/mtk/drivers/warp; do
+  if [ -d "$d" ]; then
+    echo "    OK   $d"
   else
-    echo "    [警告] 未能补入 luci-app-wrtbwmon, 将在 defconfig 时按 feeds 实际情况处理"
+    echo "    [警告] 缺少 $d (源码结构可能已变更)"
   fi
-fi
+done
+# 注意: 不要从上游再拉一份 luci-app-wrtbwmon, 会与源码自带的同名包冲突
 
 echo "==== [diy-part2/24.10] argon / argon-config: 保留源码(luci feed)自带老版本 ===="
 # 按要求: 去除 jerrykuku 最新版拉取动作, 直接使用源码自带 argon 主题与配置插件。

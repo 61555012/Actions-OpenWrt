@@ -125,22 +125,62 @@ jobs:
         cd openwrt
         ok=1
         check() {
-          if grep -q "^$1=y" .config; then echo "✅ $1 已启用";
-          else echo "❌ $1 未启用 -> 请在 $CONFIG_FILE 中确认包名/依赖"; ok=0; fi
+          if grep -q "^$1=y\|^$1=m" .config; then echo "✅ $1";
+          else echo "❌ $1 未选中 -> 请检查包名/依赖"; ok=0; fi
         }
-        echo "---- 闭源 MTK WiFi ----"
+        uncheck() {
+          if grep -q "^$1=y" .config; then echo "❌ $1 仍被启用(要求关闭)"; ok=0;
+          else echo "✅ $1 已关闭"; fi
+        }
+        echo "---- 闭源 MTK WiFi 驱动 ----"
         check CONFIG_PACKAGE_kmod-mt_wifi
         check CONFIG_PACKAGE_kmod-conninfra
-        echo "---- MTK 硬件加速 (HNAT / WARP) ----"
+        echo "---- WiFi 配置栈 (缺一不可, 否则无线无法配置) ----"
+        check CONFIG_PACKAGE_mtwifi-cfg
+        check CONFIG_PACKAGE_wifi-dats
+        check CONFIG_PACKAGE_iwinfo
+        check CONFIG_PACKAGE_datconf
+        check CONFIG_PACKAGE_datconf-lua
+        check CONFIG_PACKAGE_lua-cjson
+        check CONFIG_PACKAGE_luci-app-mtwifi-cfg
+        echo "---- MTK 硬件加速 (HNAT / flow offload / WARP) ----"
         check CONFIG_PACKAGE_kmod-mediatek_hnat
         check CONFIG_PACKAGE_kmod-warp
-        echo "---- wrtbwmon (额外, 非致命) ----"
-        grep -q '^CONFIG_PACKAGE_luci-app-wrtbwmon=y' .config && echo "✅ luci-app-wrtbwmon" || echo "⚠️ luci-app-wrtbwmon 未选中(检查 feeds 是否提供)"
+        check CONFIG_PACKAGE_kmod-nf-flow
+        check CONFIG_PACKAGE_kmod-ipt-offload
+        echo "---- 驱动级关键 kconfig (机型相关) ----"
+        for s in CONFIG_MTK_MT_WIFI_MT7986_DEFAULT_FIRMWARE \
+                 CONFIG_MTK_WIFI_SKU_TYPE CONFIG_MTK_WIFI_ADIE_TYPE \
+                 CONFIG_MTK_RT_FIRST_IF_RF_OFFSET CONFIG_MTK_WHNAT_SUPPORT \
+                 CONFIG_MTK_WARP_V2 CONFIG_WED_HW_RRO_SUPPORT CONFIG_WARP_NEW_FW; do
+          grep -q "^$s=" .config && echo "✅ $s = $(grep "^$s=" .config | cut -d= -f2-)" || echo "⚠️ $s 未出现在 .config"
+        done
+        echo "---- 防火墙 (默认全开) ----"
+        check CONFIG_PACKAGE_firewall4
+        check CONFIG_PACKAGE_nftables
+        check CONFIG_PACKAGE_luci-app-firewall
+        echo "---- 明确关闭项 ----"
+        uncheck CONFIG_PACKAGE_kmod-dummy
+        echo "---- wrtbwmon (24.10 额外) ----"
+        check CONFIG_PACKAGE_luci-app-wrtbwmon
         if [ "$ok" != "1" ]; then
-          echo "❌ 闭源 WiFi / MTK 硬件加速未全部启用, 终止编译"
+          echo "❌ 闭源 WiFi / MTK 硬件加速 / dummy 关闭 未全部满足, 终止编译"
           exit 1
         fi
-        echo "✅ 闭源 WiFi + MTK 硬件加速校验通过"
+        echo "✅ 闭源 WiFi + MTK 硬件加速 + dummy 关闭 校验通过"
+
+    # 非致命: 列出本仓库配置里写了、但 defconfig 后被丢弃的符号, 方便发现包名写错
+    - name: Report dropped config symbols
+      run: |
+        cd openwrt
+        SRC="$GITHUB_WORKSPACE/$CONFIG_FILE"
+        echo "===== 以下符号在本仓库配置中启用, 但 defconfig 后不存在(可能包名写错/源码不支持) ====="
+        n=0
+        while IFS= read -r sym; do
+          [ -z "$sym" ] && continue
+          if ! grep -q "^$sym=" .config; then echo "  ⚠️ $sym"; n=$((n+1)); fi
+        done < <(grep -E '^CONFIG_[A-Za-z0-9_]+=y$' "$SRC" | sed 's/=y$//')
+        echo "===== 共 $n 个符号被丢弃 (仅提示, 不中断) ====="
 
     - name: Generate toolchain cache key
       id: cache-key

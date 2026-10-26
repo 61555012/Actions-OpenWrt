@@ -121,6 +121,29 @@ jobs:
         fi
         echo "✅ 目标机型校验通过: mediatek/filogic/clx_s20p"
 
+    # 强校验: 防火墙必须默认全开 (fw4 / nftables)
+    - name: Verify firewall enabled
+      run: |
+        cd openwrt
+        ok=1
+        check() {
+          if grep -q "^$1=y\|^$1=m" .config; then echo "✅ $1";
+          else echo "❌ $1 未选中 -> 防火墙未默认开启"; ok=0; fi
+        }
+        check CONFIG_PACKAGE_firewall4
+        check CONFIG_PACKAGE_nftables
+        check CONFIG_PACKAGE_luci-app-firewall
+        if grep -q '^CONFIG_PACKAGE_firewall=y' .config; then
+          echo "❌ 检测到旧版 fw3 (firewall) 被启用, 与 fw4 冲突"; ok=0
+        else
+          echo "✅ 未使用旧版 fw3"
+        fi
+        if [ "$ok" != "1" ]; then
+          echo "❌ 防火墙校验失败, 终止编译"
+          exit 1
+        fi
+        echo "✅ 防火墙 (fw4/nftables) 默认开启校验通过"
+
     - name: Generate toolchain cache key
       id: cache-key
       run: |
