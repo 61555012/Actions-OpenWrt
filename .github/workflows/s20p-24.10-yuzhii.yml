@@ -158,10 +158,11 @@ jobs:
         echo "---- 防火墙 (默认全开) ----"
         check CONFIG_PACKAGE_firewall4
         # nftables 是多变体包(nftables-json / nftables-nojson, PROVIDES=nftables),
-        # 不存在 CONFIG_PACKAGE_nftables 这个符号; firewall4 依赖 +nftables-json
-        if grep -qE '^CONFIG_PACKAGE_nftables(-json|-nojson)?=[ym]$' .config; then
-          echo "✅ nftables -> $(grep -oE '^CONFIG_PACKAGE_nftables(-json|-nojson)?=[ym]' .config | head -1)"
-        else echo "❌ nftables 未选中 -> 请检查包名/依赖"; ok=0; fi
+        # 不存在 CONFIG_PACKAGE_nftables 这个符号; firewall4 依赖 +nftables-json,
+        # 这里必须校验真实符号, 确认 nftables 二进制确实被编译进固件
+        if grep -qE '^CONFIG_PACKAGE_nftables(-json|-nojson)=[ym]$' .config; then
+          echo "✅ nftables -> $(grep -oE '^CONFIG_PACKAGE_nftables(-json|-nojson)=[ym]' .config | head -1)"
+        else echo "❌ nftables(nftables-json/nojson) 未选中 -> 防火墙不会编译进固件"; ok=0; fi
         check CONFIG_PACKAGE_luci-app-firewall
         echo "---- 明确关闭项 ----"
         uncheck CONFIG_PACKAGE_kmod-dummy
