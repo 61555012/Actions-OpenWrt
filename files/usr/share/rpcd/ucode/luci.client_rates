@@ -1,0 +1,34 @@
+// rpcd ucode plugin: 只读暴露 client-rates 采样结果
+'use strict';
+
+import { readfile } from 'fs';
+
+const FILE = '/tmp/client-rates.json';
+const STATE = '/etc/client-rates/state.json';
+
+function read_json(path) {
+	let d = null;
+	try { d = readfile(path); } catch (e) { return null; }
+	if (d == null) return null;
+	try { return json(d); } catch (e) { return null; }
+}
+
+const methods = {
+	status: {
+		call: function () {
+			const d = read_json(FILE);
+			if (d == null || type(d) != 'object')
+				return { error: 'unavailable', ts: 0, clients: [],
+				         wan: { up: 0, down: 0, up_today: 0, down_today: 0 } };
+			return d;
+		}
+	},
+	state: {
+		call: function () {
+			const d = read_json(STATE);
+			return (d != null) ? d : { error: 'unavailable' };
+		}
+	}
+};
+
+return { 'luci.client_rates': methods };

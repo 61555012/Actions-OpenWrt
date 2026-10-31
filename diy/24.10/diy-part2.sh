@@ -24,6 +24,24 @@ find . -type d \( -name "OpenAppFilter" -o -name "luci-app-oaf" -o -name "open-a
 rm -rf package/feeds/*/luci-app-oaf package/feeds/*/OpenAppFilter
 git clone https://github.com/destan19/OpenAppFilter package/OpenAppFilter
 
+echo "==== [diy] OAF 页面注入 client-rates 速率桥接脚本 ===="
+# 目的: 仪表盘右上角 WAN 实时速率卡片 + 终端列表上下行速率改用本机 HNAT 采样值。
+# 只追加一段 <script>, 不改动 OAF 自身逻辑; 重复执行会跳过(幂等)。
+for f in package/OpenAppFilter/luci-app-oaf/luasrc/view/oaf/dashboard.htm \
+         package/OpenAppFilter/luci-app-oaf/luasrc/view/oaf/user_status.htm; do
+  if [ -f "$f" ]; then
+    if grep -q 'client-rates/oaf-bridge.js' "$f"; then
+      echo "    已存在, 跳过: $f"
+    else
+      printf '\n<script src="/luci-static/resources/client-rates/oaf-bridge.js?v=5"></script>\n' >> "$f"
+      grep -q 'client-rates/oaf-bridge.js' "$f" \
+        && echo "    注入成功: $f" || { echo "    [错误] 注入失败: $f"; exit 1; }
+    fi
+  else
+    echo "    [警告] 未找到 $f (OAF 目录结构可能变化)"
+  fi
+done
+
 echo "==== [diy-part2/24.10] 克隆 luci-app-mosdns(v5) 与 v2ray-geodata ===="
 git clone https://github.com/sbwml/luci-app-mosdns -b v5 package/mosdns
 git clone https://github.com/sbwml/v2ray-geodata package/v2ray-geodata

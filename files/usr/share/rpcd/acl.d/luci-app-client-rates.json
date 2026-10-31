@@ -1,0 +1,15 @@
+{
+	"luci-app-client-rates": {
+		"description": "Grant read access to the client-rates traffic sampler",
+		"read": {
+			"ubus": {
+				"luci.client_rates": [ "status", "state" ]
+			},
+			"file": {
+				"/tmp/client-rates.json": [ "read" ],
+				"/etc/client-rates/state.json": [ "read" ]
+			}
+		},
+		"write": {}
+	}
+}

@@ -1,0 +1,13 @@
+{
+	"admin/status/client-rates": {
+		"title": "设备流量",
+		"order": 15,
+		"action": {
+			"type": "view",
+			"path": "client-rates/overview"
+		},
+		"depends": {
+			"acl": [ "luci-app-client-rates" ]
+		}
+	}
+}
