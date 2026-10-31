@@ -1,0 +1,21 @@
+#!/bin/sh
+#
+# 首次启动初始化 (uci-defaults, 只在刷机后第一次开机执行)
+#   1) 启用 client-rates 采样服务 (硬件加速 HNAT 下逐设备流量)
+#   2) 主页不再显示「已分配的 DHCPv4/DHCPv6 租约」, 由 35_client_rates.js 的在线主机表取代
+#
+# 注意: 本脚本执行成功后会自我删除, 升级/恢复出厂后重新执行。
+
+# 1) client-rates 服务
+if [ -x /etc/init.d/client-rates ]; then
+	/etc/init.d/client-rates enable
+	/etc/init.d/client-rates restart >/dev/null 2>&1
+fi
+
+# 2) 关闭 LuCI 状态页的 DHCP 租约区块 (按文件名升序加载, 改名即停用)
+DHCP_JS=/www/luci-static/resources/view/status/include/40_dhcp.js
+if [ -f "$DHCP_JS" ]; then
+	mv "$DHCP_JS" "$DHCP_JS.off"
+fi
+
+exit 0
