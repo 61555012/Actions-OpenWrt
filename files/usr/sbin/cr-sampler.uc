@@ -304,6 +304,9 @@ function pick6(mac) {
 let base = {};           // 源条目基线: id -> {u,d,b,at}
 let clients = {};        // mac 或 ip:addr -> record
 let wan_hours = {};      // 全 WAN 每小时流量: hour -> [up, down]
+let wan_day_up = 0;      // 全 WAN 当天累计(跨天时归档到 archive)
+let wan_day_down = 0;
+let archive = {};        // "YYYY-MM-DD" -> [up, down], 保留 30 天
 let day = daykey(now());
 let tick = 0;
 let prev_ts = now();
@@ -404,8 +407,23 @@ function load_state() {
 	let st = null;
 	try { st = json(fs.readfile(STATE_PATH)); } catch (e) { return; }
 	if (st == null || type(st) != 'object') return;
-	if (st.day != day || type(st.clients) != 'object') return;
+	if (type(st.archive) == 'object') archive = st.archive;
+	if (st.day != day || type(st.clients) != 'object') {
+		/* 跨天(或旧格式): 昨天还没归档的累计补进 archive */
+		if (st.day != null && ((+st.wan_up || 0) > 0 || (+st.wan_down || 0) > 0))
+			archive[st.day] = [+st.wan_up || 0, +st.wan_down || 0];
+		return;
+	}
 	if (type(st.wan_hours) == 'object') wan_hours = st.wan_hours;
+	wan_day_up = +st.wan_up || 0;
+	wan_day_down = +st.wan_down || 0;
+	if (wan_day_up == 0 && wan_day_down == 0) {
+		/* 旧版 state 没有日累计字段: 用小时桶求和兜底, 保证 daily 与曲线一致 */
+		for (let h in wan_hours) {
+			let e = wan_hours[h];
+			if (type(e) == 'array') { wan_day_up += e[0]; wan_day_down += e[1]; }
+		}
+	}
 	for (let k in st.clients) {
 		let c = st.clients[k];
 		if (c.mac == null && c.ip == ROUTER_IP) continue;   // 路由器自身不入账
@@ -420,7 +438,8 @@ function load_state() {
 }
 
 function save_state() {
-	let out = { day: day, saved: now(), wan_hours: wan_hours, clients: {} };
+	let out = { day: day, saved: now(), wan_hours: wan_hours,
+		wan_up: wan_day_up, wan_down: wan_day_down, archive: archive, clients: {} };
 	let cut = now() - KEEP_DAYS * 86400;
 	for (let k in clients) {
 		let c = clients[k];
@@ -523,6 +542,8 @@ function run() {
 		c.down_today += f.down;
 		add_hour(c.hours, hh, f.up, f.down);
 		add_hour(wan_hours, hh, f.up, f.down);
+		wan_day_up += f.up;
+		wan_day_down += f.down;
 		c.last_seen = t;
 		if (seen_bw[rec.key] == null) seen_bw[rec.key] = [0, 0];
 		seen_bw[rec.key][0] += f.up;
@@ -587,10 +608,22 @@ function run() {
 	let up_today = 0, down_today = 0;
 	for (let k in clients) { up_today += clients[k].up_today; down_today += clients[k].down_today; }
 
+	/* 最近 30 天每日总量(archive) + 今天 */
+	let daily = [];
+	let dkeys = [];
+	for (let k in archive) push(dkeys, k);
+	sort(dkeys);
+	for (let i = 0; i < length(dkeys); i++) {
+		let e = archive[dkeys[i]];
+		push(daily, { d: dkeys[i], up: int(e[0]), down: int(e[1]) });
+	}
+	if (wan_day_up > 0 || wan_day_down > 0)
+		push(daily, { d: day, up: int(wan_day_up), down: int(wan_day_down) });
+
 	let out = {
 		ts: t, day: day, interval: dt, hnat: hnat_ok, lan: LAN,
 		wan: { up: int(tot_up), down: int(tot_dn), up_today: int(up_today),
-		       down_today: int(down_today), hours: wan_hours },
+		       down_today: int(down_today), hours: wan_hours, daily: daily },
 		sec: { up: int(tick_up), down: int(tick_dn) },
 		online: online, total: length(list),
 		clients: slice(list, 0, 128)
@@ -608,7 +641,14 @@ function run() {
 	tick++;
 
 	if (day != daykey(t)) {
+		archive[day] = [int(wan_day_up), int(wan_day_down)];
+		let ks = [];
+		for (let k in archive) push(ks, k);
+		sort(ks);
+		while (length(ks) > 30) { delete archive[ks[0]]; shift(ks); }
 		day = daykey(t);
+		wan_day_up = 0;
+		wan_day_down = 0;
 		wan_hours = {};
 		for (let k in clients) { clients[k].up_today = 0; clients[k].down_today = 0; clients[k].hours = {}; }
 	}
@@ -616,6 +656,26 @@ function run() {
 }
 
 load_state();
+
+/* 小时桶是后来才加的: 若与当天累计对不上(旧 state), 把差额记到当前小时,
+   保证「今日流量 / 24 小时图 / 近 30 天」三个数字互相自洽。 */
+function calibrate_hours() {
+	let tu = 0, td = 0;
+	for (let k in clients) { tu += clients[k].up_today; td += clients[k].down_today; }
+	let hu = 0, hd = 0;
+	for (let h in wan_hours) {
+		let e = wan_hours[h];
+		if (type(e) == 'array') { hu += e[0]; hd += e[1]; }
+	}
+	if (tu > hu + 1048576 || td > hd + 1048576) {
+		add_hour(wan_hours, hour_of(now()), tu - hu, td - hd);
+		wan_day_up = tu;
+		wan_day_down = td;
+		warn(sprintf('client-rates: hours 校准 +%d/+%d', tu - hu, td - hd));
+	}
+}
+try { calibrate_hours(); } catch (e) { }
+
 prev_ts = now();
 warn('client-rates: started, lan=' + LAN + ' router=' + ROUTER_IP);
 

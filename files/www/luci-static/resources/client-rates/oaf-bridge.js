@@ -133,6 +133,22 @@
 		return out;
 	}
 
+	function pad2(n) { return (n < 10 ? '0' : '') + n; }
+
+	/* 最近 30 天, 补齐没有记录的日期(与 OAF 的 30 天刻度保持一致) */
+	function dailySeries() {
+		var map = {};
+		((DATA && DATA.wan && DATA.wan.daily) || []).forEach(function (e) { map[e.d] = e; });
+		var out = [], now = new Date();
+		for (var i = 29; i >= 0; i--) {
+			var d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+			var key = d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+			var e = map[key] || { up: 0, down: 0 };
+			out.push({ date_str: key, up_bytes: e.up, down_bytes: e.down });
+		}
+		return out;
+	}
+
 	function pageMac() {
 		var m = /[?&]mac=([^&]+)/.exec(location.search);
 		if (m) return decodeURIComponent(m[1]);
@@ -270,11 +286,21 @@
 			});
 		});
 
-		/* 仪表盘: 流量统计图(今日 24 小时) */
+		/* 仪表盘: 流量统计图(今日 24 小时 / 近 30 天) */
 		hook('updateHistoryTrafficChart', function (data, type) {
-			if (!data || (type && type !== 'today')) return;
+			if (!data) return;
 			var wan = (DATA && DATA.wan) || {};
-			data.hourly_traffic = hourSeries(wan.hours);
+			if (type === 'days30') {
+				data.list = dailySeries();
+			} else {
+				data.hourly_traffic = hourSeries(wan.hours);
+			}
+		});
+
+		/* 仪表盘: 活跃终端(速率 + 悬浮里的今日流量) */
+		hook('renderClientList', function () {
+			if (Array.isArray(window.activeUsersData))
+				window.activeUsersData.forEach(fixUserStats);
 		});
 
 		/* 设备头像: 品牌图标(与主页「在线主机」一致) */
