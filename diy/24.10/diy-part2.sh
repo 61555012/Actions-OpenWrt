@@ -77,4 +77,92 @@ else
   echo "    [警告] 未找到 $CONFIG_GEN, 跳过"
 fi
 
+echo "==== [diy-part2] argon 主题: 追加 client-rates 自定义样式(防火墙区域表格排版) ===="
+# 目的: 修正防火墙「区域」表格的区域徽标排版(徽标被拉成整列宽色条 / 顶到单元格边缘),
+#       并在桌面宽度下把区域表还原成真实表格, 避免 LuCI 响应式卡片样式与上下区块不一致。
+# 做法: 构建时把样式追加进 argon 主题 cascade.css, 带标记幂等(重复执行会跳过)。
+CR_CSS_MARK='client-rates: 防火墙'
+CR_THEME_CSS=$(find feeds package -path '*argon*' -name cascade.css -type f 2>/dev/null || true)
+if [ -n "$CR_THEME_CSS" ]; then
+  for f in $CR_THEME_CSS; do
+    if grep -q "$CR_CSS_MARK" "$f"; then
+      echo "    已存在, 跳过: $f"
+    else
+      cat >> "$f" <<'CR_CUSTOM_CSS'
+
+/* ==== client-rates: 防火墙「区域」表格排版修正 (begin) ==== */
+/* 1) 区域徽标被主题拉成整列宽的色条、wan 与 ACCEPT 徽标分散到列尾并顶到单元格边缘，
+      改为紧凑徽标并左对齐: [lan] ⇒ [wan] / [ACCEPT all others] */
+#cbi-firewall-zone .zone-forwards {
+	display: flex;
+	align-items: center;
+	justify-content: flex-start;
+	gap: .45rem;
+}
+#cbi-firewall-zone .zone-forwards > span {
+	flex: 0 0 auto;
+}
+#cbi-firewall-zone .zone-src,
+#cbi-firewall-zone .zone-dest {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: .2rem;
+	flex: 0 0 auto;
+	min-width: 0;
+}
+#cbi-firewall-zone .zonebadge {
+	display: inline-block;
+	width: auto;
+	max-width: 100%;
+	white-space: nowrap;
+	padding: .1rem .55rem;
+	border-radius: 6px;
+	line-height: 1.5;
+	font-size: 90%;
+	text-align: center;
+}
+#cbi-firewall-zone .table > thead > tr > th:first-child {
+	text-align: left;
+	padding-left: 1.25rem;
+}
+
+/* 2) 桌面宽度下区域表恢复成真实表格：主题的 .table{display:block} 会把表格拆成
+      独立的 thead / tbody 匿名表格，列宽各算各的；同时在窄窗口下 LuCI 会退化成
+      卡片式（每行 250px 高、字段名重复显示），与上方「通用设置」区块风格不一致。 */
+@media (min-width: 1100px) {
+	#cbi-firewall-zone .table {
+		display: table !important;
+		width: 100% !important;
+	}
+	#cbi-firewall-zone .table > thead {
+		display: table-header-group !important;
+	}
+	#cbi-firewall-zone .table > tbody {
+		display: table-row-group !important;
+	}
+	#cbi-firewall-zone .table tr {
+		display: table-row !important;
+	}
+	#cbi-firewall-zone .table th,
+	#cbi-firewall-zone .table td {
+		display: table-cell !important;
+		width: auto !important;
+		float: none !important;
+	}
+	#cbi-firewall-zone .table th::before,
+	#cbi-firewall-zone .table td::before {
+		content: none !important;
+	}
+}
+/* ==== client-rates: 防火墙「区域」表格排版修正 (end) ==== */
+CR_CUSTOM_CSS
+      grep -q "$CR_CSS_MARK" "$f" \
+        && echo "    追加完成: $f" || { echo "    [错误] 追加失败: $f"; exit 1; }
+    fi
+  done
+else
+  echo "    [警告] 未找到 argon cascade.css, 跳过"
+fi
+
 echo "==== [diy-part2/24.10] 完成 ===="
