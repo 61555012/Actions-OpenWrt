@@ -38,6 +38,8 @@ function daykey(t) {
 	return sprintf('%04d-%02d-%02d', tm.year, tm.mon, tm.mday);
 }
 
+function hour_of(t) { return localtime(t).hour; }
+
 function lan_cfg() {
 	let ip = '192.168.6.1', mask = '255.255.255.0';
 	try {
@@ -301,6 +303,7 @@ function pick6(mac) {
 
 let base = {};           // 源条目基线: id -> {u,d,b,at}
 let clients = {};        // mac 或 ip:addr -> record
+let wan_hours = {};      // 全 WAN 每小时流量: hour -> [up, down]
 let day = daykey(now());
 let tick = 0;
 let prev_ts = now();
@@ -402,12 +405,14 @@ function load_state() {
 	try { st = json(fs.readfile(STATE_PATH)); } catch (e) { return; }
 	if (st == null || type(st) != 'object') return;
 	if (st.day != day || type(st.clients) != 'object') return;
+	if (type(st.wan_hours) == 'object') wan_hours = st.wan_hours;
 	for (let k in st.clients) {
 		let c = st.clients[k];
 		if (c.mac == null && c.ip == ROUTER_IP) continue;   // 路由器自身不入账
 		clients[k] = {
 			mac: c.mac, ip: c.ip, host: c.host, ip6: c.ip6,
 			up_today: +c.up_today || 0, down_today: +c.down_today || 0,
+			hours: (type(c.hours) == 'object') ? c.hours : {},
 			first_seen: +c.first_seen || now(), last_seen: 0,
 			up_rate: 0, down_rate: 0, conn: 0, rssi: null
 		};
@@ -415,13 +420,14 @@ function load_state() {
 }
 
 function save_state() {
-	let out = { day: day, saved: now(), clients: {} };
+	let out = { day: day, saved: now(), wan_hours: wan_hours, clients: {} };
 	let cut = now() - KEEP_DAYS * 86400;
 	for (let k in clients) {
 		let c = clients[k];
 		if (c.last_seen > 0 && c.last_seen < cut) continue;
 		out.clients[k] = { mac: c.mac, ip: c.ip, host: c.host, ip6: c.ip6,
-			up_today: c.up_today, down_today: c.down_today, first_seen: c.first_seen };
+			up_today: c.up_today, down_today: c.down_today,
+			hours: c.hours, first_seen: c.first_seen };
 	}
 	try { fs.mkdir(STATE_DIR, 0755); } catch (e) { }
 	try {
@@ -432,6 +438,15 @@ function save_state() {
 
 function client_key(mac, ip) {
 	return (mac != null && mac != '') ? mac : ('ip:' + ip);
+}
+
+/* 每小时流量桶: bucket["7"] = [up, down] */
+function add_hour(bucket, h, up, down) {
+	let k = sprintf('%d', h);
+	let e = bucket[k];
+	if (e == null) { e = [0, 0]; bucket[k] = e; }
+	e[0] += up;
+	e[1] += down;
 }
 
 function client_for(mac, ip, leases) {
@@ -450,7 +465,8 @@ function client_for(mac, ip, leases) {
 
 	if (c == null) {
 		c = { mac: mac, ip: ip, host: null, ip6: null, up_today: 0, down_today: 0,
-		      first_seen: now(), last_seen: 0, up_rate: 0, down_rate: 0, conn: 0, rssi: null };
+		      hours: {}, first_seen: now(), last_seen: 0,
+		      up_rate: 0, down_rate: 0, conn: 0, rssi: null };
 		clients[key] = c;
 	}
 	if (ip != null) c.ip = ip;
@@ -494,6 +510,7 @@ function run() {
 	}
 
 	/* 流量增量归到设备 */
+	let hh = hour_of(t);
 	let seen_bw = {};
 	for (let k in cur) {
 		let f = cur[k];
@@ -504,6 +521,8 @@ function run() {
 		let c = rec.c;
 		c.up_today += f.up;
 		c.down_today += f.down;
+		add_hour(c.hours, hh, f.up, f.down);
+		add_hour(wan_hours, hh, f.up, f.down);
 		c.last_seen = t;
 		if (seen_bw[rec.key] == null) seen_bw[rec.key] = [0, 0];
 		seen_bw[rec.key][0] += f.up;
@@ -554,6 +573,7 @@ function run() {
 			mac: c.mac, ip: c.ip, ip6: c.ip6, host: c.host,
 			up: int(c.up_rate), down: int(c.down_rate),
 			up_today: int(c.up_today), down_today: int(c.down_today),
+			hours: ((t - c.last_seen) <= 43200) ? c.hours : {},
 			conn: c.conn, rssi: c.rssi,
 			last_seen: int(c.last_seen), first_seen: int(c.first_seen),
 			online: on
@@ -569,7 +589,8 @@ function run() {
 
 	let out = {
 		ts: t, day: day, interval: dt, hnat: hnat_ok, lan: LAN,
-		wan: { up: int(tot_up), down: int(tot_dn), up_today: int(up_today), down_today: int(down_today) },
+		wan: { up: int(tot_up), down: int(tot_dn), up_today: int(up_today),
+		       down_today: int(down_today), hours: wan_hours },
 		sec: { up: int(tick_up), down: int(tick_dn) },
 		online: online, total: length(list),
 		clients: slice(list, 0, 128)
@@ -588,7 +609,8 @@ function run() {
 
 	if (day != daykey(t)) {
 		day = daykey(t);
-		for (let k in clients) { clients[k].up_today = 0; clients[k].down_today = 0; }
+		wan_hours = {};
+		for (let k in clients) { clients[k].up_today = 0; clients[k].down_today = 0; clients[k].hours = {}; }
 	}
 	if (tick % SAVE_EVERY == 0) save_state();
 }

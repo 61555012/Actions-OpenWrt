@@ -28,12 +28,13 @@ echo "==== [diy] OAF 页面注入 client-rates 速率桥接脚本 ===="
 # 目的: 仪表盘右上角 WAN 实时速率卡片 + 终端列表上下行速率改用本机 HNAT 采样值。
 # 只追加一段 <script>, 不改动 OAF 自身逻辑; 重复执行会跳过(幂等)。
 for f in package/OpenAppFilter/luci-app-oaf/luasrc/view/oaf/dashboard.htm \
-         package/OpenAppFilter/luci-app-oaf/luasrc/view/oaf/user_status.htm; do
+         package/OpenAppFilter/luci-app-oaf/luasrc/view/oaf/user_status.htm \
+         package/OpenAppFilter/luci-app-oaf/luasrc/view/oaf/user_detail.htm; do
   if [ -f "$f" ]; then
     if grep -q 'client-rates/oaf-bridge.js' "$f"; then
       echo "    已存在, 跳过: $f"
     else
-      printf '\n<script src="/luci-static/resources/client-rates/oaf-bridge.js?v=5"></script>\n' >> "$f"
+      printf '\n<script src="/luci-static/resources/client-rates/oaf-bridge.js?v=6"></script>\n' >> "$f"
       grep -q 'client-rates/oaf-bridge.js' "$f" \
         && echo "    注入成功: $f" || { echo "    [错误] 注入失败: $f"; exit 1; }
     fi
@@ -89,7 +90,6 @@ if [ -n "$CR_THEME_CSS" ]; then
       echo "    已存在, 跳过: $f"
     else
       cat >> "$f" <<'CR_CUSTOM_CSS'
-
 /* ==== client-rates: 防火墙「区域」表格排版修正 (begin) ==== */
 /* 1) 区域徽标被主题拉成整列宽的色条、wan 与 ACCEPT 徽标分散到列尾并顶到单元格边缘，
       改为紧凑徽标并左对齐: [lan] ⇒ [wan] / [ACCEPT all others] */
@@ -156,6 +156,16 @@ if [ -n "$CR_THEME_CSS" ]; then
 	}
 }
 /* ==== client-rates: 防火墙「区域」表格排版修正 (end) ==== */
+
+/* ==== client-rates: 防火墙区块底部留白 (begin) ==== */
+/* 区块内最后一行(如「转发」下拉、「流量卸载类型」)原本贴住卡片底边(gap=0),
+   与行间 14px 的间距不协调, 统一补 1rem 下内边距。 */
+#cbi-firewall-defaults > .cbi-section-node,
+#cbi-firewall-zone > .cbi-section-node,
+#cbi-firewall-forwarding > .cbi-section-node {
+	padding-bottom: 1rem !important;
+}
+/* ==== client-rates: 防火墙区块底部留白 (end) ==== */
 CR_CUSTOM_CSS
       grep -q "$CR_CSS_MARK" "$f" \
         && echo "    追加完成: $f" || { echo "    [错误] 追加失败: $f"; exit 1; }
